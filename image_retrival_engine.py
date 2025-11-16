@@ -1,4 +1,7 @@
+# image_retrival_engine.py
 import cv2 as cv
+import os
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 import numpy as np
 from glob import glob
 import os
@@ -15,11 +18,10 @@ feature_cache_file = "features_cache.pkl"
 class MediaRetrieval:
     def __init__(self):
         print("Loading deep learning models...")
-        # Pretrained models
+        
         self.vgg_model = VGG16(weights='imagenet', include_top=False, pooling='avg')
         self.resnet_model = ResNet50(weights='imagenet', include_top=False, pooling='avg')
 
-        # Feature cache
         self.database_features = {}
         
     def image_read(self, img_path):
@@ -28,7 +30,6 @@ class MediaRetrieval:
             if img is None:
                 print(f"Warning: Could not read image {img_path}")
                 return None
-            # Ensure 3 channels
             if len(img.shape) == 2:
                 img = cv.cvtColor(img, cv.COLOR_GRAY2BGR) 
             elif img.shape[2] == 4:
@@ -40,7 +41,6 @@ class MediaRetrieval:
     
     def extract_deep(self, img):
         try:
-            # Preprocess image for models
             img_rgb = cv.cvtColor(img, cv.COLOR_BGR2RGB)
             img_resized = cv.resize(img_rgb, (224, 224))
             img_array = np.expand_dims(img_resized, axis=0)
@@ -51,11 +51,8 @@ class MediaRetrieval:
             
             # ResNet50
             resnet_features = self.resnet_model.predict(img_preprocessed, verbose=0)
-            
-            # Combining
+
             combined_features = np.concatenate([vgg_features.flatten(), resnet_features.flatten()])
-            
-            # L2 normalization
             norm = np.linalg.norm(combined_features)
             if norm > 0:
                 combined_features = combined_features / norm
@@ -237,7 +234,7 @@ class MediaRetrieval:
                 with open(feature_cache_file, 'rb') as f:
                     self.database_features = pickle.load(f)
                 print(f"Loaded {len(self.database_features)} features from cache.")
-                return
+                return True
             except Exception as e:
                 print(f"Error loading cache: {e}. Re-extracting features...")
         
@@ -264,92 +261,24 @@ class MediaRetrieval:
             print(f"Features cached. Successfully processed {successful}/{len(image_paths)} images.")
         except Exception as e:
             print(f"Error caching features: {e}")
-
-def retrieval(choice):
-    categories = {
-        '1': ('beach', 'image.query/beach.jpg'),
-        '2': ('mountain', 'image.query/mountain.jpg'),
-        '3': ('food', 'image.query/food.jpg'),
-        '4': ('dinosaur', 'image.query/dinosaur.jpg'),
-        '5': ('flower', 'image.query/flower.jpg'),
-        '6': ('horse', 'image.query/horse.jpg'),
-        '7': ('elephant', 'image.query/elephant.jpg')
-    }
     
-    print("Choose a category:")
-    for key, (name, _) in categories.items():
-        print(f"{key}: {name}")
-    
-    if choice not in categories:
-        print("Invalid choice!")
-        return
-    
-    category_name, query_path = categories[choice]
-    
-    retrieval_system = MediaRetrieval()
-    
-    query_img = retrieval_system.image_read(query_path)
-    if query_img is None:
-        print(f"Error loading query image: {query_path}")
-        return
-    
-    print(f"Searching for: {category_name}")
-    cv.imshow("Query Image", query_img)
-    cv.waitKey(1)
-    
-    database_files = sorted(glob(os.path.join(database_dir, "*.jpg")))
-    
-    if not database_files:
-        print("No images found in database!")
-        return
-    
-    retrieval_system.load_or_extract_features(database_files)
-    
-    query_features = retrieval_system.combine_features(query_img)
-    
-    similarities = []
-    for img_path, db_features in retrieval_system.database_features.items():
-        similarity = retrieval_system.compute_similarity(query_features, db_features)
-        img = retrieval_system.image_read(img_path)
-        if img is not None:
-            similarities.append((img_path, similarity, img))
-    
-    similarities.sort(key=lambda x: x[1], reverse=True)
-    
-    if similarities:
-        best_match_path, best_score, best_img = similarities[0]
-        cv.imshow("Best Match", best_img)
-        print(f"\nBest match: {os.path.basename(best_match_path)}")
-        print(f"Similarity score: {best_score:.4f}")
-    
-    print("Press any key to close windows...")
-    cv.waitKey(0)
-    cv.destroyAllWindows()
-
-def main():
-    print("Media Retrieval System")
-    print("=" * 50)
-    print("1: Image retrieval")
-    print("2: Clear feature cache")
-    
-    try:
-        choice = input("Choose an option: ").strip()
+    def search_similar(self, query_path, top_k=10):
+        query_img = self.image_read(query_path)
+        if query_img is None:
+            return []
         
-        if choice == '1':
-            retrieval()
-        elif choice == '2':
-            if os.path.exists(feature_cache_file):
-                os.remove(feature_cache_file)
-                print("Feature cache cleared.")
-            else:
-                print("No cache file found.")
-        else:
-            print("Invalid choice!")
-            
-    except Exception as e:
-        print(f"Error: {e}")
-        import traceback
-        traceback.print_exc()
-
-if __name__ == "__main__":
-    main()
+        query_features = self.combine_features(query_img)
+        
+        similarities = []
+        for img_path, db_features in self.database_features.items():
+            similarity = self.compute_similarity(query_features, db_features)
+            similarities.append((img_path, similarity))
+        
+        similarities.sort(key=lambda x: x[1], reverse=True)
+        
+        return similarities[:top_k]
+    
+    def clear_cache(self):
+        if os.path.exists(feature_cache_file):
+            os.remove(feature_cache_file)
+            print("Feature cache cleared.")
