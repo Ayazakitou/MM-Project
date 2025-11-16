@@ -20,7 +20,6 @@ class MediaRetrieval:
         print("Loading deep learning models...")
         
         self.vgg_model = VGG16(weights='imagenet', include_top=False, pooling='avg')
-        self.resnet_model = ResNet50(weights='imagenet', include_top=False, pooling='avg')
 
         self.database_features = {}
         
@@ -28,36 +27,36 @@ class MediaRetrieval:
         try:
             img = cv.imread(img_path)
             if img is None:
-                print(f"Warning: Could not read image {img_path}")
+                print(f"No image read {img_path}")
                 return None
-            if len(img.shape) == 2:
-                img = cv.cvtColor(img, cv.COLOR_GRAY2BGR) 
-            elif img.shape[2] == 4:
-                img = cv.cvtColor(img, cv.COLOR_BGRA2BGR)
             return img
         except Exception as e:
             print(f"Error reading image {img_path}: {e}")
             return None
+        
+    def ensure_cache(self):
+        if not os.path.exists(feature_cache_file):
+            return False
+        elif os.path.getsize(feature_cache_file) == 0:
+            return False
+        
+        return True
     
     def extract_deep(self, img):
         try:
             img_rgb = cv.cvtColor(img, cv.COLOR_BGR2RGB)
-            img_resized = cv.resize(img_rgb, (224, 224))
-            img_array = np.expand_dims(img_resized, axis=0)
-            img_preprocessed = preprocess_input(img_array.astype(np.float32))
-            
-            # VGG16
-            vgg_features = self.vgg_model.predict(img_preprocessed, verbose=0)
-            
-            # ResNet50
-            resnet_features = self.resnet_model.predict(img_preprocessed, verbose=0)
+            image_resized = cv.resize(img_rgb, (224, 224))
+            img_prep = preprocess_input(image_resized)
+            img_expand = np.expand_dims(img_prep, axis=0)
 
-            combined_features = np.concatenate([vgg_features.flatten(), resnet_features.flatten()])
-            norm = np.linalg.norm(combined_features)
-            if norm > 0:
-                combined_features = combined_features / norm
-            
-            return combined_features
+            v_features = self.vgg_model.predict(img_expand, verbose=0)
+            v_features = v_features.flatten()
+
+            norm_v = np.linalg.norm(v_features)
+            if norm_v > 0:
+                v_features /= norm_v
+            return v_features
+        
         except Exception as e:
             print(f"Deep feature extraction Error: {e}")
             return np.zeros(4096)
@@ -66,10 +65,13 @@ class MediaRetrieval:
         try:
             hsv = cv.cvtColor(img, cv.COLOR_BGR2HSV)
             
-            h_mean, h_std = np.mean(hsv[:,:,0]), np.std(hsv[:,:,0])
-            s_mean, s_std = np.mean(hsv[:,:,1]), np.std(hsv[:,:,1])
-            v_mean, v_std = np.mean(hsv[:,:,2]), np.std(hsv[:,:,2])
-            
+            h_mean = np.mean(hsv[:,:,0])
+            h_std = np.std(hsv[:,:,0])
+            s_mean = np.mean(hsv[:,:,1])
+            s_std = np.std(hsv[:,:,1])
+            v_mean = np.mean(hsv[:,:,2])
+            v_std = np.std(hsv[:,:,2])
+
             features = np.array([h_mean, h_std, s_mean, s_std, v_mean, v_std])
             features = np.clip(features, 0, 255)
             
@@ -82,20 +84,20 @@ class MediaRetrieval:
         try:
             gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
             
-            lbp = self.to_binaryP(gray)
+            lbp = self.to_binary(gray)
             lbp_hist, _ = np.histogram(lbp.ravel(), bins=256, range=(0, 256))
             lbp_hist = lbp_hist.astype(np.float32)
             if lbp_hist.sum() > 0:
-                lbp_hist = lbp_hist / lbp_hist.sum()
+                lbp_hist /= lbp_hist.sum()
             
-            texture_features = self.compute_texture(gray)
+            texture_f = self.compute_texture(gray)
             
-            return np.concatenate([lbp_hist[:50], texture_features])
+            return np.concatenate([lbp_hist[:50], texture_f])
         except Exception as e:
             print(f"Texture extraction Error: {e}")
             return np.zeros(60)
     
-    def to_binaryP(self, img, radius=1, neighbors=8):
+    def to_binary(self, img, radius=1, neighbors=8):
         height, width = img.shape
         lbp = np.zeros((height-2*radius, width-2*radius), dtype=np.uint8)
         
@@ -105,6 +107,7 @@ class MediaRetrieval:
                 binary_pattern = 0
                 for k in range(neighbors):
                     angle = 2 * np.pi * k / neighbors
+
                     x = i + int(radius * np.cos(angle))
                     y = j - int(radius * np.sin(angle))
                     
@@ -113,7 +116,7 @@ class MediaRetrieval:
                     
                     if img[x, y] >= center:
                         binary_pattern |= (1 << (neighbors - 1 - k))
-                
+
                 lbp[i-radius, j-radius] = binary_pattern
         
         return lbp
@@ -121,6 +124,11 @@ class MediaRetrieval:
     def compute_texture(self, gray_img):
         try:
             features = []
+
+            edges = cv.Canny(gray_img, 100, 200)
+            edge_density = np.sum(edges > 0)
+            edge_density /= edges.size
+            features.append(edge_density)
             
             sobelx = cv.Sobel(gray_img, cv.CV_64F, 1, 0, ksize=3)
             sobely = cv.Sobel(gray_img, cv.CV_64F, 0, 1, ksize=3)
@@ -131,28 +139,39 @@ class MediaRetrieval:
             
             hist, _ = np.histogram(gray_img, bins=256, range=(0, 256))
             hist = hist.astype(np.float32)
-            hist = hist / hist.sum()
-            hist = hist[hist > 0]
-            entropy = -np.sum(hist * np.log2(hist))
-            features.append(entropy)
-            
-            features = [x if np.isfinite(x) else 0 for x in features]
+            hist /= hist.sum()
+            entrophy = 0.0
+
+            for x in hist:
+                if x > 0:
+                    x *= np.log2(x)
+                    entrophy -= x
+
+            features.append(entrophy)
+
+            for x in features:
+                if np.isnan(x) or np.isinf(x):
+                    x = 0.0
             
             return np.array(features)
         except Exception as e:
-            print(f"Error in simple texture features: {e}")
+            print(f"Compute texture feature Error: {e}")
             return np.zeros(3)
     
     def extract_shape(self, img):
         try:
             gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
             
-            binary = cv.adaptiveThreshold(gray, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                                        cv.THRESH_BINARY, 11, 2)
+            binary = cv.adaptiveThreshold(
+                gray,
+                255,  
+                cv.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                cv.THRESH_BINARY, 11, 2
+                )
             
             contours, _ = cv.findContours(binary, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
             
-            contour_features = []
+            contour_f = []
             for cnt in contours[:3]:
                 if len(cnt) >= 5:
                     area = cv.contourArea(cnt)
@@ -166,58 +185,52 @@ class MediaRetrieval:
                     x, y, w, h = cv.boundingRect(cnt)
                     aspect_ratio = float(w) / h if h > 0 else 0
                     
-                    contour_features.extend([area, perimeter, circularity, aspect_ratio])
+                    contour_f.extend([area, perimeter, circularity, aspect_ratio])
             
-            while len(contour_features) < 12:
-                contour_features.append(0.0)
+            while len(contour_f) < 12:
+                contour_f.append(0.0)
             
-            return np.array(contour_features[:12])
+            return np.array(contour_f[:12])
         except Exception as e:
-            print(f"Error in shape feature extraction: {e}")
+            print(f"Shape feature extraction Error: {e}")
             return np.zeros(12)
     
     def combine_features(self, img):
         try:
-            deep_features = self.extract_deep(img)
+            deep_f = self.extract_deep(img)
             
-            color_features = self.extract_moments(img)
-            texture_features = self.extract_texture(img)
-            shape_features = self.extract_shape(img)
+            color_f = self.extract_moments(img)
+            texture_f = self.extract_texture(img)
+            shape_f = self.extract_shape(img)
             
-            traditional_features = np.concatenate([
-                color_features, 
-                texture_features, 
-                shape_features
-            ])
-            
-            norm = np.linalg.norm(traditional_features)
-            if norm > 0:
-                traditional_features = traditional_features / norm
+            features = np.concatenate([color_f, texture_f, shape_f])
+
+            norm_v1 = np.linalg.norm(features)
+            if norm_v1 > 0:
+                features = features / norm_v1
             
             alpha = 0.7
-            combined_features = np.concatenate([
-                alpha * deep_features,
-                (1 - alpha) * traditional_features
-            ])
+            deep_f *= alpha
+            features *= (1 - alpha)
+            combined_f = np.concatenate([deep_f, features])
             
-            final_norm = np.linalg.norm(combined_features)
-            if final_norm > 0:
-                combined_features = combined_features / final_norm
-            
-            return combined_features.astype(np.float32)
+            norm_v2 = np.linalg.norm(combined_f)
+            if norm_v2 > 0:
+                combined_f = combined_f / norm_v2
+            return combined_f.astype(np.float32)
             
         except Exception as e:
             print(f"Error building feature vector: {e}")
             return np.zeros(4096 + 6 + 60 + 12, dtype=np.float32)
     
-    def compute_similarity(self, features1, features2):
+    def compute_similarity(self, f1, f2):
         try:
-            dot_product = np.dot(features1, features2)
-            norm1 = np.linalg.norm(features1)
-            norm2 = np.linalg.norm(features2)
+            dot_product = np.dot(f1, f2)
+            norm_v1 = np.linalg.norm(f1)
+            norm_v2 = np.linalg.norm(f2)
             
-            if norm1 > 0 and norm2 > 0:
-                similarity = dot_product / (norm1 * norm2)
+            if norm_v1 > 0 and norm_v2 > 0:
+                similarity = dot_product / (norm_v1 * norm_v2)
                 similarity = max(0.0, min(1.0, similarity))
             else:
                 similarity = 0.0
@@ -227,17 +240,17 @@ class MediaRetrieval:
             print(f"Error computing similarity: {e}")
             return 0.0
     
-    def load_or_extract_features(self, image_paths):
-        if os.path.exists(feature_cache_file):
+    def load_or_extract_f(self, image_paths):
+        if os.path.exists(feature_cache_file) and self.ensure_cache():
             print("Loading cached features...")
             try:
-                with open(feature_cache_file, 'rb') as f:
-                    self.database_features = pickle.load(f)
+                with open(feature_cache_file, 'rb') as features:
+                    self.database_features = pickle.load(features)
                 print(f"Loaded {len(self.database_features)} features from cache.")
                 return True
             except Exception as e:
                 print(f"Error loading cache: {e}. Re-extracting features...")
-        
+
         print("Extracting features from database...")
         successful = 0
         for i, img_path in enumerate(image_paths):
@@ -254,11 +267,11 @@ class MediaRetrieval:
             except Exception as e:
                 print(f"Error processing {img_path}: {e}")
                 continue
-        
         try:
-            with open(feature_cache_file, 'wb') as f:
-                pickle.dump(self.database_features, f)
+            with open(feature_cache_file, 'wb') as features:
+                pickle.dump(self.database_features, features)
             print(f"Features cached. Successfully processed {successful}/{len(image_paths)} images.")
+            return True
         except Exception as e:
             print(f"Error caching features: {e}")
     
@@ -267,11 +280,11 @@ class MediaRetrieval:
         if query_img is None:
             return []
         
-        query_features = self.combine_features(query_img)
+        query_f = self.combine_features(query_img)
         
         similarities = []
-        for img_path, db_features in self.database_features.items():
-            similarity = self.compute_similarity(query_features, db_features)
+        for img_path, db_f in self.database_features.items():
+            similarity = self.compute_similarity(query_f, db_f)
             similarities.append((img_path, similarity))
         
         similarities.sort(key=lambda x: x[1], reverse=True)

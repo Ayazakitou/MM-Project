@@ -143,7 +143,7 @@ class RetrievalApp(QMainWindow):
             print("No images found in database!")
             return
         
-        success = self.retrieval_system.load_or_extract_features(database_files)
+        success = self.retrieval_system.load_or_extract_f(database_files)
         if success:
             self.status_label.setText(f"Database Loaded. {len(self.retrieval_system.database_features)} images indexed.")
         else:
