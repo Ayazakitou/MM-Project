@@ -1,4 +1,4 @@
-# image_retrival_engine.py
+# image_retrieval_engine.py
 import cv2 as cv
 import os
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
@@ -9,6 +9,7 @@ import tensorflow as tf
 from tensorflow.keras.applications import VGG16, ResNet50
 from tensorflow.keras.applications.vgg16 import preprocess_input
 from sklearn.metrics.pairwise import cosine_similarity
+from skimage import feature
 import pickle
 
 database_dir = "image.orig"
@@ -84,7 +85,7 @@ class MediaRetrieval:
         try:
             gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
             
-            lbp = self.to_binary(gray)
+            lbp = feature.local_binary_pattern(gray, P=8, R=1, method="uniform")
             lbp_hist, _ = np.histogram(lbp.ravel(), bins=256, range=(0, 256))
             lbp_hist = lbp_hist.astype(np.float32)
             if lbp_hist.sum() > 0:
@@ -96,58 +97,34 @@ class MediaRetrieval:
         except Exception as e:
             print(f"Texture extraction Error: {e}")
             return np.zeros(60)
-    
-    def to_binary(self, img, radius=1, neighbors=8):
-        height, width = img.shape
-        lbp = np.zeros((height-2*radius, width-2*radius), dtype=np.uint8)
-        
-        for i in range(radius, height-radius):
-            for j in range(radius, width-radius):
-                center = img[i, j]
-                binary_pattern = 0
-                for k in range(neighbors):
-                    angle = 2 * np.pi * k / neighbors
-
-                    x = i + int(radius * np.cos(angle))
-                    y = j - int(radius * np.sin(angle))
-                    
-                    x = max(0, min(x, height-1))
-                    y = max(0, min(y, width-1))
-                    
-                    if img[x, y] >= center:
-                        binary_pattern |= (1 << (neighbors - 1 - k))
-
-                lbp[i-radius, j-radius] = binary_pattern
-        
-        return lbp
 
     def compute_texture(self, gray_img):
         try:
-            features = []
 
             edges = cv.Canny(gray_img, 100, 200)
             edge_density = np.sum(edges > 0)
             edge_density /= edges.size
-            features.append(edge_density)
             
             sobelx = cv.Sobel(gray_img, cv.CV_64F, 1, 0, ksize=3)
             sobely = cv.Sobel(gray_img, cv.CV_64F, 0, 1, ksize=3)
             
             gradient_magnitude = np.sqrt(sobelx**2 + sobely**2)
-            features.append(np.mean(gradient_magnitude))
-            features.append(np.std(gradient_magnitude))
+            features = [
+                edge_density,
+                *(np.mean(gradient_magnitude), np.std(gradient_magnitude)),
+            ]
             
             hist, _ = np.histogram(gray_img, bins=256, range=(0, 256))
             hist = hist.astype(np.float32)
             hist /= hist.sum()
-            entrophy = 0.0
+            entropy = 0.0
 
             for x in hist:
                 if x > 0:
                     x *= np.log2(x)
-                    entrophy -= x
+                    entropy -= x
 
-            features.append(entrophy)
+            features.append(entropy)
 
             for x in features:
                 if np.isnan(x) or np.isinf(x):

@@ -4,11 +4,10 @@ import sys
 import os
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                             QHBoxLayout, QPushButton, QLabel, QComboBox, 
-                            QGroupBox, QFileDialog, QMessageBox, QProgressBar, 
-                            QScrollArea, QGridLayout, QSplitter, QTextEdit)
+                            QGroupBox, QMessageBox, QGridLayout)
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QPixmap, QFont
-import image_retrival_engine as ire
+import image_retrieval_engine as ire
 from categories import CATEGORIES
 
 database_dir = "image.orig"
@@ -45,24 +44,6 @@ class ImageRetrievalFactory:
     
     def __init__(self):
         pass
-
-class RetrievalWorker(QWidget):
-
-    finish = pyqtSignal(list)
-    error = pyqtSignal(str)
-
-    def __init__(self, retrieval_system, top_k: int):
-        super().__init__()
-        self.retrieval_system = retrieval_system
-        self.top_k = top_k
-        self.init_ui()
-
-    def run(self):
-        try:
-            results = self.retrieval_system.search_image(self.query_image_path, top_k=5)
-            self.finish.emit(results)
-        except Exception as e:
-            self.error.emit(str(e))
 
 class RetrievalApp(QMainWindow):
     def __init__(self):
